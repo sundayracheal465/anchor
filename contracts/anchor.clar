@@ -11,6 +11,7 @@
 (define-constant ERR-NOT-AUTHORIZED u2)
 (define-constant ERR-NOT-OWNER u3)
 (define-constant ERR-ITEM-EXISTS u4)
+(define-constant ERR-INVALID-INPUT u5)
 
 ;; Helper function to check if actor is authorized for an item
 (define-private (is-authorized (item-id uint) (actor principal))
@@ -25,34 +26,41 @@
 (define-read-only (count-events-for (item-id uint))
   (default-to u0 (map-get? event-counts item-id)))
 
-;; Helper function to increment event count
-(define-private (increment-event-count (item-id uint))
+;; FIXED: Helper function to get next event index and increment count
+(define-private (get-next-event-index (item-id uint))
   (let ((current-count (count-events-for item-id)))
     (map-set event-counts item-id (+ current-count u1))
     current-count))
 
-;; Enhanced mint function with proper event counting
+;; FIXED: Enhanced mint function with proper event indexing and input validation
 (define-public (mint-item (id uint) (meta (string-ascii 256)))
-  (let ((existing-item (map-get? items id)))
-    (match existing-item
-      val (err ERR-ITEM-EXISTS)
-      (begin
-        (map-set items id { owner: tx-sender, metadata: meta, status: "manufactured" })
-        (map-set events { item-id: id, index: u0 } { actor: tx-sender, note: "mint", timestamp: stacks-block-height })
-        (map-set event-counts id u1)
-        (ok true)))))
+  (if (> (len meta) u0)  ;; Input validation
+    (let ((existing-item (map-get? items id)))
+      (match existing-item
+        val (err ERR-ITEM-EXISTS)
+        (begin
+          (map-set items id { owner: tx-sender, metadata: meta, status: "manufactured" })
+          ;; FIXED: Use consistent indexing - first event gets index 0
+          (let ((event-index (get-next-event-index id)))
+            (map-set events { item-id: id, index: event-index } 
+              { actor: tx-sender, note: "mint", timestamp: stacks-block-height })
+            (ok true)))))
+    (err ERR-INVALID-INPUT)))
 
 ;; Enhanced append-event with access control and proper indexing
 (define-public (append-event (id uint) (note (string-ascii 160)))
-  (let ((item-data (map-get? items id)))
-    (match item-data
-      val
-        (if (is-authorized id tx-sender)
-          (let ((idx (increment-event-count id)))
-            (map-set events { item-id: id, index: idx } { actor: tx-sender, note: note, timestamp: stacks-block-height })
-            (ok true))
-          (err ERR-NOT-AUTHORIZED))
-      (err ERR-NOT-FOUND))))
+  (if (> (len note) u0)  ;; Input validation
+    (let ((item-data (map-get? items id)))
+      (match item-data
+        val
+          (if (is-authorized id tx-sender)
+            (let ((event-index (get-next-event-index id)))
+              (map-set events { item-id: id, index: event-index } 
+                { actor: tx-sender, note: note, timestamp: stacks-block-height })
+              (ok true))
+            (err ERR-NOT-AUTHORIZED))
+        (err ERR-NOT-FOUND)))
+    (err ERR-INVALID-INPUT)))
 
 ;; Transfer ownership of an item
 (define-public (transfer-ownership (id uint) (new-owner principal))
@@ -62,8 +70,8 @@
         (if (is-eq tx-sender (get owner val))
           (begin
             (map-set items id (merge val { owner: new-owner }))
-            (let ((idx (increment-event-count id)))
-              (map-set events { item-id: id, index: idx } 
+            (let ((event-index (get-next-event-index id)))
+              (map-set events { item-id: id, index: event-index } 
                 { actor: tx-sender, note: "ownership-transfer", timestamp: stacks-block-height }))
             (ok true))
           (err ERR-NOT-OWNER))
@@ -95,18 +103,20 @@
 
 ;; Update item status (only owner or authorized actors)
 (define-public (update-status (id uint) (new-status (string-ascii 64)))
-  (let ((item-data (map-get? items id)))
-    (match item-data
-      val
-        (if (is-authorized id tx-sender)
-          (begin
-            (map-set items id (merge val { status: new-status }))
-            (let ((idx (increment-event-count id)))
-              (map-set events { item-id: id, index: idx } 
-                { actor: tx-sender, note: "status-update", timestamp: stacks-block-height }))
-            (ok true))
-          (err ERR-NOT-AUTHORIZED))
-      (err ERR-NOT-FOUND))))
+  (if (> (len new-status) u0)  ;; Input validation
+    (let ((item-data (map-get? items id)))
+      (match item-data
+        val
+          (if (is-authorized id tx-sender)
+            (begin
+              (map-set items id (merge val { status: new-status }))
+              (let ((event-index (get-next-event-index id)))
+                (map-set events { item-id: id, index: event-index } 
+                  { actor: tx-sender, note: "status-update", timestamp: stacks-block-height }))
+              (ok true))
+            (err ERR-NOT-AUTHORIZED))
+        (err ERR-NOT-FOUND)))
+    (err ERR-INVALID-INPUT)))
 
 ;; Read-only functions for querying data
 
